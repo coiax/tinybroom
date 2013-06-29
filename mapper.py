@@ -4,6 +4,7 @@ import datetime
 import json
 import re
 import argparse
+import multiprocessing
 
 from PIL import Image
 from flufl.enum import Enum
@@ -524,8 +525,13 @@ def _get_autoversion():
     except (IOError, ValueError):
         return None
 
-def render_world(world_folder):
-    current_autoversion = _get_autoversion()
+def render_world(world_folder,options):
+    if options.ignore_autoversion:
+        current_autoversion = None
+    else:
+        current_autoversion = _get_autoversion()
+
+
     print("Current autoversion is {}".format(current_autoversion))
     region_path = os.path.abspath(os.path.join(world_folder, 'region'))
     # We want the second part, the TAIL part
@@ -543,54 +549,126 @@ def render_world(world_folder):
         if region_file.endswith('.mca'):
             region_files.append(region_file)
 
-    assert region_files
-    for region_file in region_files:
-        region_file_path = os.path.join(region_path, region_file)
-
-        mo = region_regex.match(region_file)
+    def key(filename):
+        mo = region_regex.match(filename)
         assert mo is not None
-        x = int(mo.group(1))
-        z = int(mo.group(2))
+        return int(mo.group(1)), int(mo.group(2))
 
-        last_modified = os.path.getmtime(os.path.join(region_path,region_file))
-        cache_file = os.path.join(cache_folder, "{}.{}.cache".format(x,z))
-        reuse = False
-        if os.path.exists(cache_file):
-            with open(cache_file) as f:
-                cache_details = json.dump(f)
-                cache_last_modified = cache_details['last_modified']
-                cache_version = cache_details['version']
+    region_files.sort(key=key)
+    assert region_files
 
-                if (cache_last_modified == last_modified and
-                    current_autoversion is not None and
-                    cache_version == current_autoversion):
-                    #
-                    print("{} unchanged. Reusing image.".format(region_file))
-                    reuse = True
+    if options.processes == 1:
+        pool = None
+    else:
+        pool = multiprocessing.Pool(options.processes)
 
-        if not reuse:
-            print("Reading file {}".format(region_file))
-            region = anvil.read_region_from_file(region_file_path)
-            print("Rendering region {}".format(region_file))
-            im = render_region(region)
-            im.save(os.path.join(cache_folder, "{}.{}.png".format(x,z)))
 
-            cache_details = {'last_modified': last_modified,
-                             'version': current_autoversion}
+    if not options.stitch_only:
+        for region_file in region_files:
+            region_file_path = os.path.join(region_path, region_file)
 
-            with open(cache_file, 'w') as f:
-                json.dump(cache_details, f, indent=1)
+            x,z = key(region_file)
 
-    # And then there's a stitching process?
+            region_file_path = os.path.join(region_path, region_file)
+            last_modified = os.path.getmtime(region_file_path)
+            cache_file = os.path.join(cache_folder, "{}.{}.cache".format(x,z))
+            image_file = os.path.join(cache_folder, "{}.{}.png".format(x,z))
+            reuse = False
+            # The check to ignore the cache or not, is here.
+            if os.path.exists(cache_file) and not options.ignore_cache:
+                with open(cache_file, 'r') as f:
+                    cache_details = json.load(f)
+                    cache_last_modified = cache_details['last_modified']
+                    cache_version = cache_details['version']
 
+                    if (cache_last_modified == last_modified and
+                        (current_autoversion is None or
+                         cache_version == current_autoversion)):
+                        #
+                        print("Reusing image {}.".format(region_file))
+                        reuse = True
+
+            if not reuse:
+                func = _render_region_from_filename_also_cache
+                args = (current_autoversion, region_file_path,
+                        cache_file, image_file)
+
+                if pool is None:
+                    func(*args)
+                else:
+                    pool.apply_async(func, args)
+
+    if pool is not None:
+        # Now wait for everyone to finish.
+        pool.close()
+        pool.join()
+
+    coords = [key(region_file) for region_file in region_files]
+    x_coords = [coord[0] for coord in coords]
+    z_coords = [coord[1] for coord in coords]
+
+    max_x = max(x_coords)
+    min_x = min(x_coords)
+
+    max_z = max(z_coords)
+    min_z = min(z_coords)
+
+    x_size = abs(max_x) + abs(min_x) + 1
+    z_size = abs(max_z) + abs(min_z) + 1
+
+    im = Image.new("RGBA", (512*x_size, 512*z_size))
+
+    for region_file in region_files:
+        x,z = key(region_file)
+        image_path = os.path.join(cache_folder, "{}.{}.png".format(x,z))
+
+        tiny_im = Image.open(image_path)
+
+        coord_x = x - min_x
+        coord_z = z - min_z
+
+        im.paste(tiny_im, (512*coord_x, 512*coord_z))
+
+    if options.rotate % 360 != 0:
+        angle = options.rotate % 360
+        im.rotate(angle, Image.NEAREST, expand=True)
+
+    # TODO there is a transparent border, generally, you might want
+    # to get rid of it
+    im.save(options.output)
+
+def _render_region_from_filename_also_cache(current_autoversion,
+                                            region_file,cache_file,image_file):
+
+    last_modified = os.path.getmtime(region_file)
+    head, tail = os.path.split(region_file)
+
+    print("Reading file {}".format(tail))
+    region = anvil.read_region_from_file(region_file)
+    print("Rendering region {}".format(tail))
+    im = render_region(region)
+
+    im.save(image_file)
+
+    cache_details = {'last_modified': last_modified,
+                     'version': current_autoversion}
+
+    with open(cache_file, 'w') as f:
+        json.dump(cache_details, f, indent=1)
 
 def _main():
     p = argparse.ArgumentParser()
     p.add_argument("world")
     p.add_argument('-o','--output',default='out.png')
+    p.add_argument('--ignore-autoversion',action='store_true')
+    p.add_argument('--ignore-cache',action='store_true')
+    p.add_argument('--stitch-only',action='store_true')
+    p.add_argument('-r','--rotate',type=int,default=0)
+    p.add_argument('-p','--processes',type=int,default=None)
 
     ns = p.parse_args()
-    render_world(ns.world)
+    assert (ns.rotate % 90) == 0
+    render_world(ns.world, ns)
 
 if __name__=='__main__':
     _main()
