@@ -35,6 +35,7 @@ def read_region(stream, keep_empty=True):
     for x,z in chunks.keys():
         if not chunks[x,z]['empty']:
             print("Reading chunk ({},{})".format(x,z))
+            stream.pos = chunks[x,z]['offset'] * 4096 * 8
             data = read_chunk(stream)
             chunks[x,z]['data'] = nbt.read_string(data)
 
@@ -87,7 +88,11 @@ def get_timestamp(stream):
 
 if __name__=='__main__':
     import pickle
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument('region_file',nargs='?',default='r.-1.0.mca')
+    ns = p.parse_args()
 
-    region = read_region_from_file('r.-1.0.mca')
+    region = read_region_from_file(ns.region_file)
     with open('_region_cache.pickle','wb') as f:
         pickle.dump(region, f, -1)

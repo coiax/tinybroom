@@ -1,3 +1,6 @@
+import os.path
+import pickle
+
 from PIL import Image
 from flufl.enum import Enum
 
@@ -210,12 +213,15 @@ def render_region(region):
         offset_z = chunk_z * 16
         if region[chunk_x, chunk_z]['empty'] == True:
             # An empty chunk is transparent.
-            for y in range(16):
-                for x in range(16):
-                    pix[x + offset_x, y + offset_z] = (0,0,0,255)
-            continue
-
-        render_chunk(region[chunk_x,chunk_z], pix, offset_x, offset_z)
+            # The default filling is transparency, so we don't need to put
+            # anything in.
+            #for y in range(16):
+            #    for x in range(16):
+            #        pix[x + offset_x, y + offset_z] = (200,20,20,255)
+            pass
+        else:
+            #print("Doing chunk ({},{})".format(chunk_x,chunk_z))
+            render_chunk(region[chunk_x,chunk_z], pix, offset_x, offset_z)
     im.save("out.png")
 
 
@@ -288,18 +294,18 @@ def render_chunk(chunk, pix, offset_x, offset_z):
                             colour = (255,127,127,255)
                             print(block_type)
 
+                        pixel = (offset_x + x, offset_z + z)
+                        pix[pixel] = colour
 
-                        pix[x + offset_x, z + offset_z] = colour
-
-
-if __name__=='__main__':
-    import os.path
-    import pickle
-
+def _main():
     if os.path.exists('_region_cache.pickle'):
         with open('_region_cache.pickle','rb') as f:
             region = pickle.load(f)
     else:
         region = anvil.read_region_from_file('r.-1.0.mca')
-    print("""Now doing some "rendering". It'll definitely be quick. -_-""")
+    print("Loaded region file.")
     render_region(region)
+
+if __name__=='__main__':
+    _main()
+
