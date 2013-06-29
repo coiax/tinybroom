@@ -3,10 +3,10 @@ import pickle
 import datetime
 import json
 import re
+import argparse
 
 from PIL import Image
 from flufl.enum import Enum
-import argparse
 
 import anvil
 

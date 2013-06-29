@@ -1,0 +1,16 @@
+There is no setup.py.
+
+Dependencies
+============
+
+* pypy (if you want it to finish this year)
+python 2.7
+
+* Python Imaging Library (pil) with PNG support
+* bitstring
+* flufl.enum
+
+Optional
+--------
+
+* memcache (currently not used, but there's code there for it)
