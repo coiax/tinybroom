@@ -1,6 +1,8 @@
 import os.path
 import pickle
 import datetime
+import json
+import re
 
 from PIL import Image
 from flufl.enum import Enum
@@ -515,27 +517,80 @@ class Renderer:
 _renderer = Renderer()
 render_region = _renderer.render_region
 
+def _get_autoversion():
+    try:
+        with open('autoversion') as f:
+            return int(f.read().strip("\n"))
+    except (IOError, ValueError):
+        return None
+
+def render_world(world_folder):
+    current_autoversion = _get_autoversion()
+    print("Current autoversion is {}".format(current_autoversion))
+    region_path = os.path.abspath(os.path.join(world_folder, 'region'))
+    # We want the second part, the TAIL part
+    world_name = os.path.split(os.path.abspath(world_folder))[1]
+    print("Rendering the world '{}'".format(world_name))
+    print("Region files at: {}".format(region_path))
+    cache_folder = os.path.join("/tmp/tinybroom", world_name)
+    if not os.path.exists(cache_folder):
+        os.makedirs(cache_folder)
+
+    region_regex = re.compile(r'r\.(-?\d+)\.(-?\d+)\.mca')
+
+    region_files = []
+    for region_file in os.listdir(region_path):
+        if region_file.endswith('.mca'):
+            region_files.append(region_file)
+
+    assert region_files
+    for region_file in region_files:
+        region_file_path = os.path.join(region_path, region_file)
+
+        mo = region_regex.match(region_file)
+        assert mo is not None
+        x = int(mo.group(1))
+        z = int(mo.group(2))
+
+        last_modified = os.path.getmtime(os.path.join(region_path,region_file))
+        cache_file = os.path.join(cache_folder, "{}.{}.cache".format(x,z))
+        reuse = False
+        if os.path.exists(cache_file):
+            with open(cache_file) as f:
+                cache_details = json.dump(f)
+                cache_last_modified = cache_details['last_modified']
+                cache_version = cache_details['version']
+
+                if (cache_last_modified == last_modified and
+                    current_autoversion is not None and
+                    cache_version == current_autoversion):
+                    #
+                    print("{} unchanged. Reusing image.".format(region_file))
+                    reuse = True
+
+        if not reuse:
+            print("Reading file {}".format(region_file))
+            region = anvil.read_region_from_file(region_file_path)
+            print("Rendering region {}".format(region_file))
+            im = render_region(region)
+            im.save(os.path.join(cache_folder, "{}.{}.png".format(x,z)))
+
+            cache_details = {'last_modified': last_modified,
+                             'version': current_autoversion}
+
+            with open(cache_file, 'w') as f:
+                json.dump(cache_details, f, indent=1)
+
+    # And then there's a stitching process?
+
+
 def _main():
     p = argparse.ArgumentParser()
-    p.add_argument("region_file", nargs='?', default='r.-1.0.mca')
+    p.add_argument("world")
     p.add_argument('-o','--output',default='out.png')
 
     ns = p.parse_args()
-    print("Loading region file into memory, also parsing.")
-
-    start_load = datetime.datetime.now()
-
-    region = anvil.read_region_from_file(ns.region_file)
-    end_load = datetime.datetime.now()
-
-    print("Loaded region file: {} seconds".format(end_load - start_load))
-
-    start_render = datetime.datetime.now()
-    im = render_region(region)
-    end_render = datetime.datetime.now()
-    print("Rendered region: {} seconds".format(end_render - start_render))
-
-    im.save(ns.output)
+    render_world(ns.world)
 
 if __name__=='__main__':
     _main()
