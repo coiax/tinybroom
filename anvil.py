@@ -4,23 +4,51 @@ import collections
 import gzip
 import zlib
 import StringIO
+import hashlib
 
 import bitstring
 
 import nbt
+
+try:
+    import memcache
+except ImportError:
+    pass
+
+class _MemcacheCache(object):
+    def __init__(self, prefix=''):
+        self.mc = memcache.Client(['127.0.0.1:11211'], debug=1)
+        self.prefix = prefix
+    def _keyify(self, key):
+        key = ''.join((self.prefix, repr(key)))
+        memcache_key = hashlib.md5(key).hexdigest()
+        return memcache_key
+    def __getitem__(self, key):
+        item = self.mc.get(self._keyify(key))
+        return item
+    def __setitem__(self, key, value):
+        self.mc.set(self._keyify(key), value)
+
+class _NoopCache(object):
+    def __getitem__(self, key):
+        return None
+    def __setitem__(self, key, value):
+        return None
 
 CHUNK_OFFSET = {}
 for z in range(32):
     for x in range(32):
         CHUNK_OFFSET[x,z] = 4 * ((x % 32) + (z % 32)*32)
 
-def read_region_from_file(filename):
+def read_region_from_file(filename, cache=None):
     stream = bitstring.ConstBitStream(filename=filename)
-    region = read_region(stream)
+    region = read_region(stream, cache=cache)
     return region
 
-def read_region(stream, keep_empty=True):
+def read_region(stream, keep_empty=True, cache=None):
     chunks = collections.OrderedDict()
+    if cache is None:
+        cache = _NoopCache()
 
     for z in range(32):
         for x in range(32):
@@ -28,16 +56,27 @@ def read_region(stream, keep_empty=True):
             chunks[x,z] = {'offset': offset, 'length': length}
             chunks[x,z]['empty'] = offset == 0 and length == 0
 
+    skip_chunk = []
+
     for z in range(32):
         for x in range(32):
             chunks[x,z]['timestamp'] = get_timestamp(stream)
+            cached_chunk = cache[x,z]
+            if cached_chunk is not None:
+                if cached_chunk['timestamp'] <= chunks[x,z]['timestamp']:
+                    #print("Skipping chunk ({},{}); in cache".format(x,z))
+                    skip_chunk.append((x,z))
+                else:
+                    chunks[x,z] = cached_chunk
 
     for x,z in chunks.keys():
-        if not chunks[x,z]['empty']:
-            print("Reading chunk ({},{})".format(x,z))
+        if not chunks[x,z]['empty'] and (x,z) not in skip_chunk:
+            #print("Reading chunk ({},{})".format(x,z))
             stream.pos = chunks[x,z]['offset'] * 4096 * 8
             data = read_chunk(stream)
             chunks[x,z]['data'] = nbt.read_string(data)
+
+            cache[x,z] = chunks[x,z]
 
     doomed = []
 
@@ -91,8 +130,14 @@ if __name__=='__main__':
     import argparse
     p = argparse.ArgumentParser()
     p.add_argument('region_file',nargs='?',default='r.-1.0.mca')
+    p.add_argument('--memcache',action='store_true')
+
     ns = p.parse_args()
 
-    region = read_region_from_file(ns.region_file)
-    with open('_region_cache.pickle','wb') as f:
-        pickle.dump(region, f, -1)
+    if ns.memcache:
+        import memcache
+        cache = _MemcacheCache(prefix=ns.region_file)
+    else:
+        cache = None
+
+    region = read_region_from_file(ns.region_file, cache=cache)
